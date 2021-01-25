@@ -157,6 +157,11 @@ struct inst_trace_t {
   ~inst_trace_t();
 };
 ```
+# Architecture Hierarchy
+[Image](./figures/Arch_Hier.png)
+
+
+
 ***
 
 You can use the [editor on GitHub](https://github.com/apuaaChen/accel_sim_code_study.github.io/edit/gh-pages/index.md) to maintain and preview the content for your website in Markdown files.
