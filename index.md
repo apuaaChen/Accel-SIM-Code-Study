@@ -173,6 +173,7 @@ When a thread block is issued, all its traces are loaded into the hardware warps
                     * `trace_shader_core_ctx::init_traces()`
                         * `trace_kernel_info_t::get_next_threadblock_traces()`
 
+## gpgpu_sim::cycle()
 In each simulation cycle, the `gpgpu_sim::cycle()` is called. This function takes no arguments.
 ```c++
 // main()
@@ -182,6 +183,8 @@ if (m_gpgpu_sim->active()) {
   m_gpgpu_sim->deadlock_check();
 } 
 ```
+
+## gpgpu_sim::issue_block2core()
 In the `gpgpu_sim::cycle()`, besides calling `cycle()` function of other units like the cores, it also call the function `gpgpu_sim::issue_block2core()`, which also takes no argument.
 ```c++
 // gpgpu_sim::cycle()
@@ -207,6 +210,8 @@ void gpgpu_sim::issue_block2core() {
 ```
 Basically, all the SM clusters are traversed. The traversal starts from the last issued cluster. For each cluster, `issue_block2core` is called, which returns the number of blocks issued by this cluster. This is incremented to the member `gpgpu_sim::m_total_cta_launched`.
 
+## simt_core_cluster::issue_block2core()
+
 In `simt_core_cluster::issue_block2core()`, we have
 ```c++
 unsigned simt_core_cluster::issue_block2core() {
@@ -222,7 +227,7 @@ unsigned simt_core_cluster::issue_block2core() {
     kernel_info_t *kernel;
     // Something about kernel selection
     
-		// If there are remaining CTAs in the kernel and the core can issue a block
+    // If there are remaining CTAs in the kernel and the core can issue a block
     if (m_gpu->kernel_more_cta_left(kernel) && m_core[core]->can_issue_1block(*kernel)) {
       // issue the block
       m_core[core]->issue_block2core(*kernel);
@@ -244,6 +249,8 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
 }
 ```
 This is quite simple. As the config knows the resources (reg, shared memory) occupied by the kernel, it can compute the maximum number of CTAs supported by each SM. So simply check whether the number of active CTAs is smaller than the upper bound.
+
+## shader_core_ctx::issue_block2core()
 
 In `shader_core_ctx::issue_block2core()`, we only want to issue 1 CTA if it is possible. We have
 ```c++
@@ -294,6 +301,8 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 ```
 It first computes start and end threads occupied by the CTA. Then it calls the `trace_shader_core_ctx::init_warps`
 
+## trace_shader_core_ctx::init_warps()
+
 In `trace_shader_core_ctx::init_warps`, we have
 ```c++
 void trace_shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
@@ -312,6 +321,8 @@ void trace_shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
 }
 ```
 It compute the start warp and end hardware warp of the CTA, and call the `trace_shader_core_ctx::init_traces()`
+
+## trace_shader_core_ctx::init_traces()
 ```c++
 void trace_shader_core_ctx::init_traces(unsigned start_warp, unsigned end_warp,
                                         kernel_info_t &kernel) {
@@ -335,18 +346,11 @@ void trace_shader_core_ctx::init_traces(unsigned start_warp, unsigned end_warp,
       static_cast<trace_kernel_info_t &>(kernel);
   // fill the threadblock_traces with the with the traces from file
   trace_kernel.get_next_threadblock_traces(threadblock_traces);
-
-  // set the pc from the traces and ignore the functional model
-  for (unsigned i = start_warp; i < end_warp; ++i) {
-    trace_shd_warp_t *m_trace_warp = static_cast<trace_shd_warp_t *>(m_warp[i]);
-    // set pc
-    m_trace_warp->set_next_pc(m_trace_warp->get_start_trace_pc());
-    // set kernel
-    m_trace_warp->set_kernel(&trace_kernel);
-  }
+  // Something else
 }
 ```
-The `trace_shd_warp_t`'s are the hardware warps. They have a vector `trace_shd_warp_t::warp_trace`  to store the traces of the warp.
+The `trace_shd_warp_t`s are the hardware warps. They have a vector `trace_shd_warp_t::warp_trace`  to store the traces of the warp.
+## get_next_threadblock_traces()
 ```c++
 bool trace_kernel_info_t::get_next_threadblock_traces(
    std::vector<std::vector<inst_trace_t> *> threadblock_traces) {
