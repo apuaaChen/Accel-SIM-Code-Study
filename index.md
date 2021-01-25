@@ -3,11 +3,9 @@ Zhaodong Chen
 This note aims to put together major components from the simulator and help understanding the entire simulation process from the source code level. We will focus on the trace-driven simulation.
 ***
 
-# Trace
+# Load Trace to GPU
 
-## Load Trace to GPU
-
-### Input Files
+## Input Files
 
 The trace-driven simulation takes two input files: `kernel-x.traceg` and `kernelslist.g`. An example of `kernelslist.g` is as follows
 
@@ -73,7 +71,7 @@ The format of the trace is as follows
 ```
 PC mask dest_num [reg_dests] opcode src_num [reg_srcs] mem_width [adrrescompress?] [mem_addresses]
 ```
-### Process the Trace Files
+## Process the Trace Files
 In the main function, the trace files are processed as follows
 ```c++
 // Step 1: create the trace_parser
@@ -99,7 +97,7 @@ for command in commandlist{
 }    
 ```
 
-### Class: trace_kernel_info
+## Class: trace_kernel_info
 
 The `(trace_)kernel_info` is an important interface between the trace files and the performance simulator. In particular, it provides a function that load the trace of a thread block into a vector of vector of `inst_trace_t`:
 ```c++
