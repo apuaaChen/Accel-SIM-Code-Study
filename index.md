@@ -1,3 +1,4 @@
+# Accel-SIM Code Study
 ## Welcome to GitHub Pages
 
 You can use the [editor on GitHub](https://github.com/apuaaChen/accel_sim_code_study.github.io/edit/gh-pages/index.md) to maintain and preview the content for your website in Markdown files.
