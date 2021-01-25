@@ -1,7 +1,8 @@
-# Accel-SIM Code Study
 Zhaodong Chen
 
 This note aims to put together major components from the simulator and help understanding the entire simulation process from the source code level. We will focus on the trace-driven simulation.
+
+# Trace
 
 ## Input Files
 
@@ -19,7 +20,7 @@ kernel-1.traceg
 It include two types of commands: `MemcpyHtoD` and `kernel launch`. The `MemcpyHtoD` is simply defined with a string. The `kernel launch` leads the parser to the `kernel-x.traceg` file. Notably, the `MemcpyHtoD` should match the memory address used in the kernel's trace.
 
 Then, let's see an example of `kernel-x.traceg` file
-```c++
+```shell
 # Basic information of the kernel
 -kernel name = KERNEL_NAME
 -kernel id = 1
@@ -61,6 +62,90 @@ inst = ...
 #END_TB
 
 ..
+```
+## Process the Trace Files
+In the main function, it does several things as follows
+```c++
+// Step 1: create the trace_parser
+trace_parser tracer(tconfig.get_traces_filename());
+
+// Step 2: get all the MemcpyHtoD and kernels (commands)
+std::vector<trace_command> commandlist = tracer.parse_commandlist_file();
+
+// Loop: travers all the commands
+for command in commandlist:
+	if command is MemcpyHtoD:
+		// Do something
+	if command is Launch Kernel:
+		// get kernel info
+    trace_kernel_info_t kernel_info = create_kernel_info(...);
+		// Load the kernel_info into the simulator
+    m_gpgpu_sim->launch(kernel_info);
+
+		
+		while (m_gpgpu_sim->active())
+      m_gpgpu_sim->cycle()
+```
+
+## Class: trace_kernel_info
+
+The `(trace_)kernel_info` is an important interface between the tracer and the performance simulator. It provides the following informations
+```c++
+class trace_kernel_info_t : public kernel_info_t {
+public:
+  bool get_next_threadblock_traces(
+      std::vector<std::vector<inst_trace_t> *> threadblock_traces);
+private:
+  // Some other functions and basic-information members
+};
+```
+Most of the members in this class are just providing some functionality and basic informations of a kernel. The most important function is `get_next_threadblock_traces`. It takes a vector of vector as input
+```c++
+// Input: vector of vector of inst_trace_t
+std::vector<std::vector<inst_trace_t> *> threadblock_traces;
+```
+
+It is a vector of vector because each thread block has several warps, and each warp has several instructions. So the first level is the index to the warp, and the second level is the index to individual instructions. 
+
+The whole container is cleared at the begining with
+```c++
+for (unsigned i = 0; i < threadblock_traces.size(); ++i) {
+    threadblock_traces[i]->clear();
+}
+```
+Then, it will fill the the slots with
+```c++
+threadblock_traces[warp_id]->at(inst_count).parse_from_string(line, trace_version);
+```
+The vector of the target warp is located, then the slot for the instruction is found. The slot is filled with the trace by calling the function `inst_trace_t::parse_from_string()`, which gets the following informations from the trace string
+```c++
+struct inst_trace_t {
+  inst_trace_t();
+  inst_trace_t(const inst_trace_t &b);
+	
+  // Basic informations
+  unsigned m_pc;  // pc of the instruction
+  unsigned mask;  // active mask
+  unsigned reg_dsts_num;  // number of destinition register
+  unsigned reg_dest[MAX_DST];  // an array of destinition register
+  std::string opcode;  // Opcode string
+  unsigned reg_srcs_num;  // number of src registers
+  unsigned reg_src[MAX_SRC];  // an array of source register
+  inst_memadd_info_t *memadd_info;  // memory info
+	
+  // Other helper functions
+  bool parse_from_string(std::string trace, unsigned tracer_version);
+
+  bool check_opcode_contain(const std::vector<std::string> &opcode,
+                            std::string param) const;
+
+  unsigned
+  get_datawidth_from_opcode(const std::vector<std::string> &opcode) const;
+
+  std::vector<std::string> get_opcode_tokens() const;
+
+  ~inst_trace_t();
+};
 ```
 ***
 
