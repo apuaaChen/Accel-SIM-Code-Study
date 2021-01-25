@@ -5,7 +5,7 @@ This note aims to put together major components from the simulator and help unde
 
 # Trace
 
-## Load Trace from Trace Files to GPU
+## Load Trace to GPU
 
 ### Input Files
 
