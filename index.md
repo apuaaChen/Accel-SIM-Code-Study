@@ -1,10 +1,13 @@
 Zhaodong Chen
 
 This note aims to put together major components from the simulator and help understanding the entire simulation process from the source code level. We will focus on the trace-driven simulation.
+***
 
 # Trace
 
-## Input Files
+## Load Trace from Trace Files to GPU
+
+### Input Files
 
 The trace-driven simulation takes two input files: `kernel-x.traceg` and `kernelslist.g`. An example of `kernelslist.g` is as follows
 
@@ -17,7 +20,7 @@ MemcpyHtoD,0x00007efe7b5c0a00,2048
 kernel-1.traceg
 ```
 
-It include two types of commands: `MemcpyHtoD` and `kernel launch`. The `MemcpyHtoD` is simply defined with a string. The `kernel launch` leads the parser to the `kernel-x.traceg` file. Notably, the `MemcpyHtoD` should match the memory address used in the kernel's trace.
+It includes two types of commands: `MemcpyHtoD` and `kernel launch`. The `MemcpyHtoD` is simply defined with a string. The `kernel launch` leads the parser to the `kernel-x.traceg` file. Notably, the `MemcpyHtoD` should match the memory address used in the kernel's trace.
 
 Then, let's see an example of `kernel-x.traceg` file
 ```shell
@@ -63,8 +66,15 @@ inst = ...
 
 ..
 ```
-## Process the Trace Files
-In the main function, it does several things as follows
+
+First, the basic information of the kernel is provided. Then, the traces for each thread block is marked with key words `#BEGIN_TB` and `#END_TB`. Each thread block has several warps, the begining of each warp is marked with `warp = warp_id` followed by the total number of traces of the warp (e.g. `insts = 1212`).
+
+The format of the trace is as follows
+```
+PC mask dest_num [reg_dests] opcode src_num [reg_srcs] mem_width [adrrescompress?] [mem_addresses]
+```
+### Process the Trace Files
+In the main function, the trace files are processed as follows
 ```c++
 // Step 1: create the trace_parser
 trace_parser tracer(tconfig.get_traces_filename());
@@ -73,23 +83,25 @@ trace_parser tracer(tconfig.get_traces_filename());
 std::vector<trace_command> commandlist = tracer.parse_commandlist_file();
 
 // Loop: travers all the commands
-for command in commandlist:
-	if command is MemcpyHtoD:
-		// Do something
-	if command is Launch Kernel:
-		// get kernel info
-    trace_kernel_info_t kernel_info = create_kernel_info(...);
-		// Load the kernel_info into the simulator
-    m_gpgpu_sim->launch(kernel_info);
-
-		
-		while (m_gpgpu_sim->active())
-      m_gpgpu_sim->cycle()
+for command in commandlist{
+    if command is MemcpyHtoD{
+        // Do something
+    }
+    if command is Launch Kernel{
+        // get kernel info
+        trace_kernel_info_t kernel_info = create_kernel_info(...);
+        // Load the kernel_info into the simulator
+        m_gpgpu_sim->launch(kernel_info);
+        while (m_gpgpu_sim->active()){
+            m_gpgpu_sim->cycle()
+        }
+    }
+}    
 ```
 
-## Class: trace_kernel_info
+### Class: trace_kernel_info
 
-The `(trace_)kernel_info` is an important interface between the tracer and the performance simulator. It provides the following informations
+The `(trace_)kernel_info` is an important interface between the trace files and the performance simulator. In particular, it provides a function that load the trace of a thread block into a vector of vector of `inst_trace_t`:
 ```c++
 class trace_kernel_info_t : public kernel_info_t {
 public:
@@ -113,11 +125,11 @@ for (unsigned i = 0; i < threadblock_traces.size(); ++i) {
     threadblock_traces[i]->clear();
 }
 ```
-Then, it will fill the the slots with
+Then, the slots are filled with
 ```c++
 threadblock_traces[warp_id]->at(inst_count).parse_from_string(line, trace_version);
 ```
-The vector of the target warp is located, then the slot for the instruction is found. The slot is filled with the trace by calling the function `inst_trace_t::parse_from_string()`, which gets the following informations from the trace string
+In which the vector of the target warp is located (`warp_id`), then the slot for the instruction is found (`inst_count`). The slot is filled with the trace by calling the function `inst_trace_t::parse_from_string()`, which gets the following informations from the trace string and encodes it into an instance of class `inst_trace_t`.
 ```c++
 struct inst_trace_t {
   inst_trace_t();
