@@ -1,3 +1,6 @@
+---
+sort: 2
+---
 # Architecture Hierarchy
 ![./figures/Arch_Hier.png](./figures/Arch_Hier.PNG)
 

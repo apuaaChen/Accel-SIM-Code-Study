@@ -1,3 +1,6 @@
+---
+sort: 1
+---
 # Load Trace to GPU
 
 ## Input Files

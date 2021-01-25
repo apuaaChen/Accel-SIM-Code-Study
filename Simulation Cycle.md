@@ -1,3 +1,6 @@
+---
+sort: 4
+---
 # Simulation Cycle
 
 When the `gpgpu_sim::cycle()` is called, it calls the `cycle` of all its SM clusters as follows

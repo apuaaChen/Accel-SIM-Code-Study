@@ -1,3 +1,6 @@
+---
+sort: 3
+---
 # Issue a Thread Block
 When a thread block is issued, all its traces are loaded into the hardware warps of the target SM core. Issuing a thread block takes a hierarchical call as follows:
 
