@@ -438,3 +438,91 @@ bool trace_parser::get_next_threadblock_traces(
   return true;
 }
 ```
+# Simulation Cycle
+
+When the `gpgpu_sim::cycle()` is called, it calls the `cycle` of all its SM clusters as follows
+```c++
+void gpgpu_sim::cycle() {
+  // Something
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
+      m_cluster[i]->core_cycle();
+    }
+  }
+}
+```
+When the `simt_core_cluster::core_cycle()` is called, it calls the `cycle` of all the SM cores in it.
+```c++
+void simt_core_cluster::core_cycle() {
+  for (std::list<unsigned>::iterator it = m_core_sim_order.begin();it != m_core_sim_order.end(); ++it) {
+    m_core[*it]->cycle();
+  }
+
+  if (m_config->simt_core_sim_order == 1) {
+    m_core_sim_order.splice(m_core_sim_order.end(), m_core_sim_order,
+                            m_core_sim_order.begin());
+  }
+}
+```
+Each SM core has several pipeline stages: `fetch()`, `decode()`, `issue()`, `read_operands()`, `execute()`, and `writeback()`, its `cycle()` function is defined as follows
+```c++
+// shader_core_ctx::cycle()
+void shader_core_ctx::cycle() {
+  if (!isactive() && get_not_completed() == 0) return;
+
+  m_stats->shader_cycles[m_sid]++;
+  writeback();
+  execute();
+  read_operands();
+  issue();
+  for (int i = 0; i < m_config->inst_fetch_throughput; ++i) {
+    decode();
+    fetch();
+  }
+}
+```
+
+# Instruction Decode (ID)
+In this part, we will study how the instruction is fetched.
+
+## Instruction Fetch Buffer
+![Image](./figures/Ifetch.PNG)
+
+The Instruction Fetch Buffer (`ifetch_buffer_t`) models the interface between the instruction cache (I-Cache) and the SM core. It is defined as follows
+```c++
+// shader_core_ctx
+ifetch_buffer_t m_inst_fetch_buffer;
+
+struct ifetch_buffer_t {
+  ifetch_buffer_t() { m_valid = false; }
+
+  ifetch_buffer_t(address_type pc, unsigned nbytes, unsigned warp_id) {
+    m_valid = true;
+    m_pc = pc;
+    m_nbytes = nbytes;
+    m_warp_id = warp_id;
+  }
+
+  bool m_valid;
+  address_type m_pc;
+  unsigned m_nbytes;
+  unsigned m_warp_id;
+};
+```
+
+## 
+
+
+<details>
+
+* If the `m_inst_buffer` is empty (not valid)
+  * If there is an instruction in the instruction cache (it is ready)
+    * put the instruction into the `m_inst_buffer`
+  * Otherwise if there isn't a ready instruction in the cache
+    * traverse all the hardware warps (2048/32). If the warp is functioning, not waiting for instruction cache missing, and its instruction buffer is empty: generate a memory fetch request.
+    * Check if the fetch can be directly obtained in the instruction cache.
+      * If it is, put the instruction into `m_inst_buffer`
+      * otherwise, the hardware warp is set to instruction cache missing state.
+* Run the L1 instruction cache cycle.
+
+</details>
