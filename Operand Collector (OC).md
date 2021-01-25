@@ -22,4 +22,6 @@ std::vector<dispatch_unit_t> m_dispatch_units;
 ```
 
 The unit includes 
-* Arbitrator (`arbiter_t`): 
+* Ports (`m_in_ports`): This contains the input pipeline register sets (ID_OC) and output register sets (OC_EX). The `warp_inst_t` in the ID_OC ports will be issued to a collector unit. Also, when the Collector Unit gets all the required source registers, it will be dispatched by a <mark>Dispatch Unit</mark> 
+* Collector Units (`m_cu`): each collector unit can hold a single instruction at a time. It will send the request for source registers to the Arbitrator. Once all the 
+* Arbitrator (`m_arbiter`):
