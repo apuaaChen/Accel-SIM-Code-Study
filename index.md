@@ -158,7 +158,7 @@ struct inst_trace_t {
 };
 ```
 # Architecture Hierarchy
-[Image](./figures/Arch_Hier.png)
+![./figures/Arch_Hier.png](./figures/Arch_Hier.PNG)
 
 
 
