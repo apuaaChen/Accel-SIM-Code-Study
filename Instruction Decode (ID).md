@@ -2,10 +2,22 @@
 sort: 5
 ---
 # Instruction Decode (ID)
-In this part, we will study how the instruction is fetched.
+![Image](./figures/ID.PNG)
+
+In this part of the note covers the `fetch()` and `decode()` as follows
+```c++
+// shader_core_ctx::cycle()
+for (int i = 0; i < m_config->inst_fetch_throughput; ++i) {
+    decode();
+    fetch();
+}
+
+```
+In each `fetch()` step, the `m_inst_fetch_buffer` issues instruction memory fetch request and collect the fetched instructions from L1 instruction cache. In each `decode()` step, the context in the `m_inst_fetch_buffer` is decoded into an object of `warp_inst_t` and stored to the ibuffer of the corresponding hardware warp waiting to be issued by the scheduler.
+***
 
 ## Instruction Fetch Buffer
-![Image](./figures/Ifetch.PNG)
+
 
 The Instruction Fetch Buffer (`ifetch_buffer_t`) models the interface between the instruction cache (I-Cache) and the SM core. It is defined as follows
 ```c++
@@ -28,8 +40,11 @@ struct ifetch_buffer_t {
   unsigned m_warp_id;
 };
 ```
+It has a member `m_valid` that indicates whether the buffer has a valid instruction. It also records the warp id of the instruction in `m_warp_id`.
 
 ## fetch()
+
+The `fetch()` function generates instruction memory request and collects the fetched instruction from L1 instruction cache. The fetched instruction is put into the instruction fetch buffer.
 
 ```c++
 void shader_core_ctx::fetch() {
@@ -119,14 +134,14 @@ void shader_core_ctx::fetch() {
   m_L1I->cycle();
 }
 ```
-
-* If the `m_inst_buffer` is empty (not valid)
+The logic is as follows:
+* If the `m_inst_fetch_buffer` is empty (not valid)
   * If there is an instruction in the instruction cache (it is ready)
-    * put the instruction into the `m_inst_buffer`
+    * put the instruction into the `m_inst_fetch_buffer`
   * Otherwise if there isn't a ready instruction in the cache
     * traverse all the hardware warps (2048/32). If the warp is functioning, not waiting for instruction cache missing, and its instruction buffer is empty: generate a memory fetch request.
     * Check if the fetch can be directly obtained in the instruction cache.
-      * If it is, put the instruction into `m_inst_buffer`
+      * If it is, put the instruction into `m_inst_fetch_buffer`
       * otherwise, the hardware warp is set to instruction cache missing state.
 * Run the L1 instruction cache cycle.
 
@@ -154,11 +169,11 @@ void ibuffer_fill(unsigned slot, const warp_inst_t *pI) {
   m_next = 0;
 }
 ```
-Each hardware warp has 2 `m_ibuffer` that model the I-Buffer. To fill the buffer, just put the `warp_inst_t` into the slot and set valid to true.
+Each hardware warp has 2 `m_ibuffer` that model the I-Buffer. The I-Buffer can hold an object of `warp_inst_t` decoded from the instruction fetch buffer. It also has a boolean member `m_valid` that indicates whether is holds a valid instruction. To fill the buffer, just put the `warp_inst_t` into the slot and set valid to true.
 
 ## Decode()
 ![Image](./figures/decode.PNG)
-**Summary**: each `m_inst_fetch_buffer` can contain one or two instructions. The context in the buffer is converted into one or to objects of type `(trace_)warp_inst_t`, one object per instruction. These objects are linked to the `m_inst` member in the ibuffer entry. Each hardware warp has two ibuffer entry.
+Each `m_inst_fetch_buffer` can contain one or two instructions. The context in the buffer is converted into one or to objects of type `(trace_)warp_inst_t`, one object per instruction. These objects are linked to the `m_inst` member in the ibuffer entry. Each hardware warp has two ibuffer entry.
 
 The decode function is as follows
 
@@ -173,7 +188,7 @@ void shader_core_ctx::decode() {
     const warp_inst_t *pI1 = get_next_inst(m_inst_fetch_buffer.m_warp_id, pc);
     // fill i-buffer
     m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(0, pI1);
-    // ???
+    // increment the number of instructions in the pipeline
     m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
     if (pI1) {
       // Some Stats
@@ -218,7 +233,7 @@ const trace_warp_inst_t *trace_shd_warp_t::get_next_trace_inst() {
     return NULL;
 }
 ```
-Notably, the `trace_pc` here is not the pc of the instruction, but pc to the trace. As the trace may repeat the same pc of instruction for several times where there are branches. The trace is converted into the type `trace_warp_inst_t` defined as follows
+Notably, the `trace_pc` here is not the pc of the instruction, but pc (line number) to the trace. As the trace may repeat the same pc of instruction for several times when there are branches. The trace is converted into the type `trace_warp_inst_t` defined as follows
 ```c++
 class trace_warp_inst_t : public warp_inst_t {
 public:
@@ -330,6 +345,4 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   return true;
 }
 ```
-Basically, it records the basic information like Opcode, latency, init latency, input and output register lists.
-
-Now we store all the information about the trace in an object of `warp_inst_t`.
+Basically, it records the basic information like Opcode, latency, latency, initiation_interval, input and output register lists.
