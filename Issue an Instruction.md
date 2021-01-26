@@ -13,6 +13,45 @@ Basically, each scheduler unit in the SM core finds the hardware warp with a val
 ## Barriers
 CUDA supports different kinds of barriers like `membar` in PTX and other warp-wide or block-wide sync barriers. They are modeled by `shd_warp_t::set_membar()` and `shd_warp_t::clear_membar()`, or the `barrier_ste_t m_barriers` in the `shader_core_ctx`.
 
+The warps are checked with `shd_warp_t::waiting()`, it is defined as follows
+```c++
+bool shd_warp_t::waiting() {
+  if (functional_done()) {
+    // waiting to be initialized with a kernel
+    return true;
+  } else if (m_shader->warp_waiting_at_barrier(m_warp_id)) {
+    // waiting for other warps in CTA to reach barrier
+    return true;
+  } else if (m_shader->warp_waiting_at_mem_barrier(m_warp_id)) {
+    // waiting for memory barrier
+    return true;
+  } else if (m_n_atomic > 0) {
+    // waiting for atomic operation to complete at memory:
+    return true;
+  }
+  return false;
+}
+
+bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
+  // if the m_warp is not waiting for mem barrier, return false
+  if (!m_warp[warp_id]->get_membar()) return false;
+  if (!m_scoreboard->pendingWrites(warp_id)) {
+    m_warp[warp_id]->clear_membar();
+    if (m_gpu->get_config().flush_l1()) {
+      // Mahmoud fixed this on Nov 2019
+      // Invalidate L1 cache
+      // Based on Nvidia Doc, at MEM barrier, we have to
+      //(1) wait for all pending writes till they are acked
+      //(2) invalidate L1 cache to ensure coherence and avoid reading stall data
+      cache_invalidate();
+      // TO DO: you need to stall the SM for 5k cycles.
+    }
+    return false;
+  }
+  return true;
+}
+```
+
 ## Scoreboard
 The scoreboard is used to avoid read-after-write or write-after-write data hazards. In Accel-SIM, the scoreboard has two lists to reserve the destination registers of issued instructions. The first one, `reg_table`, tracks all the destination registers. The second one, `longopregs`, only tracks the destination registers of memory access.
 
@@ -405,6 +444,7 @@ The `cycle()` seems to be shared across all the child classes. In summary, the s
 In a nutshell, the scheduler finds a hardware warp with a valid ibuffer slot and not waiting for barrier. After getting the hardware warp, get the instruction from the ibuffer and check if it is valid. For a valid instruction, if its pc doesn't match the current pc, it means that control hazard happens, and the ibuffer is flused. Then, its source and destination registers are passed to the scoreboard for collision checking. If it also passes the scoreboard, check if the ID_OC pipeline register set of the target function unit has a free slot. If it has, the instruction can be issued, and the inital for loop breaks. Otherwise, if the instruction in the current hardware warp is not issued, the next hardware warp is checked. So only one instruction is issued per scheduler unit per cycle. For more details, please check the code below.
 
 
+### Find an Eligible Warp
 ```c++
 // scheduler_unit
 std::vector<shd_warp_t *> *m_warp;
@@ -722,124 +762,9 @@ void scheduler_unit::cycle() {
 }
 ```
 
+### Issue Warp
 
-
-
-
-
-
-For the `shd_warp_t::waiting()`, it is defined as follows
-```c++
-bool shd_warp_t::waiting() {
-  if (functional_done()) {
-    // waiting to be initialized with a kernel
-    return true;
-  } else if (m_shader->warp_waiting_at_barrier(m_warp_id)) {
-    // waiting for other warps in CTA to reach barrier
-    return true;
-  } else if (m_shader->warp_waiting_at_mem_barrier(m_warp_id)) {
-    // waiting for memory barrier
-    return true;
-  } else if (m_n_atomic > 0) {
-    // waiting for atomic operation to complete at memory:
-    return true;
-  }
-  return false;
-}
-
-bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
-  // if the m_warp is not waiting for mem barrier, return false
-  if (!m_warp[warp_id]->get_membar()) return false;
-  if (!m_scoreboard->pendingWrites(warp_id)) {
-    m_warp[warp_id]->clear_membar();
-    if (m_gpu->get_config().flush_l1()) {
-      // Mahmoud fixed this on Nov 2019
-      // Invalidate L1 cache
-      // Based on Nvidia Doc, at MEM barrier, we have to
-      //(1) wait for all pending writes till they are acked
-      //(2) invalidate L1 cache to ensure coherence and avoid reading stall data
-      cache_invalidate();
-      // TO DO: you need to stall the SM for 5k cycles.
-    }
-    return false;
-  }
-  return true;
-}
-```
-
-
-
-
-
-
-
-
-
-*****
-
-
-
-
-Before looking at the function `shader_core_ctx::issue_warp`, let's check the pipeline registers
-
-The pipeline registers are declared as a vector of `register_set`. They are created with function `shader_core_ctx::create_front_pipeline()`. The pipeline width is defined in the `gpgpusim.config`
-```c++
-# Pipeline widths and number of FUs
-# ID_OC_SP, ID_OC_DP, ID_OC_INT, ID_OC_SFU, ID_OC_MEM, OC_EX_SP, OC_EX_DP, OC_EX_INT, OC_EX_SFU, OC_EX_MEM, EX_WB, ID_OC_TENSOR_CORE, OC_EX_TENSOR_CORE
-## Volta GV100 has 4 SP SIMD units, 4 SFU units, 4 DP units per core, 4 Tensor core units
-## we need to scale the number of pipeline registers to be equal to the number of SP units
--gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
--gpgpu_num_sp_units 4
--gpgpu_num_sfu_units 4
--gpgpu_num_dp_units 4
--gpgpu_num_int_units 4
--gpgpu_tensor_core_avail 1
--gpgpu_num_tensor_core_units 4
-  
-  
-const char *const pipeline_stage_name_decode[] = {
-    "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
-    "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
-    "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
-    "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
-```
-So we can know
-
-* ID: instruction decode
-* OC: Operand Collector
-* EX: execution
-* WB: write back
-
-The `register_set` is defined as follows
-```c++
-class register_set {
- public:
-  // Each 
-  register_set(unsigned num, const char *name) {
-    for (unsigned i = 0; i < num; i++) {
-      regs.push_back(new warp_inst_t());
-    }
-    m_name = name;
-  }
-  
-  warp_inst_t **get_free(bool sub_core_model, unsigned reg_id) {
-    // in subcore model, each sched has a one specific reg to use (based on sched id)
-
-    assert(reg_id < regs.size());
-    if (regs[reg_id]->empty()) {
-      return &regs[reg_id];
-    }
-    assert(0 && "No free register found");
-    return NULL;
-  }
- private:
-  std::vector<warp_inst_t *> regs;
-  const char *m_name;
-}
-```
-Each register set contains a vector of `warp_inst_t`.
-
-Let's get back to `issue_warp`
+After a scheduler finding an eligible warp, it calls `shader_core_ctx::issue_warp` to issue it. The function is defined as follows
 ```c++
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
@@ -878,7 +803,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
 
-// for the issue
+// warp_inst_t::issue
 void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
                         unsigned long long cycle, int dynamic_warp_id,
                         int sch_id) {
@@ -894,3 +819,11 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_scheduler_id = sch_id;
 }
 ```
+It does the following things:
+* Free the ibuffer
+* Issue the `warp_inst_t`
+    * Add the active mask and scheduler id to the object.
+* Set barriers if the instruction is a barrier op
+* SIMTStack
+* Reserve registers in the scoreboard
+* Update PC
