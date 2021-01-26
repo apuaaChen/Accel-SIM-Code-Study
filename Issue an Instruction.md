@@ -387,7 +387,7 @@ The `cycle()` seems to be shared across all the child classes. In summary, the s
         * [Scoreboard check] if the registers in the instruction is not in the scoreboard
           * [Memory] If memory access: if ID_OC available, issue & issued++, warp_inst_issued=true
           * Else:
-            * [SP || INT] if ID_OC available, issue & issued ++, warp_inst_issued=true
+            * [SP or INT] if ID_OC available, issue & issued ++, warp_inst_issued=true
             * [DP] if ID_OC available, issue & issued ++, warp_inst_issued=true
             * [SFU] if ID_OC available, issue & issued ++, warp_inst_issued=true
             * [TENSOR] if ID_OC available, issue & issued ++, warp_inst_issued=true
@@ -403,7 +403,8 @@ The `cycle()` seems to be shared across all the child classes. In summary, the s
 * If no valid instruction: Stall
 
 In a nutshell, the scheduler finds a hardware warp with a valid ibuffer slot and not waiting for barrier. After getting the hardware warp, get the instruction from the ibuffer and check if it is valid. For a valid instruction, if its pc doesn't match the current pc, it means that control hazard happens, and the ibuffer is flused. Then, its source and destination registers are passed to the scoreboard for collision checking. If it also passes the scoreboard, check if the ID_OC pipeline register set of the target function unit has a free slot. If it has, the instruction can be issued, and the inital for loop breaks. Otherwise, if the instruction in the current hardware warp is not issued, the next hardware warp is checked. So only one instruction is issued per scheduler unit per cycle. For more details, please check the code below.
-<code>
+
+<details><summary>SRC CODE</summary>
 ```c++
 // scheduler_unit
 std::vector<shd_warp_t *> *m_warp;
@@ -758,7 +759,8 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   return true;
 }
 ```
-</code>
+</details>
+
 
 
 
