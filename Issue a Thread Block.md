@@ -2,7 +2,46 @@
 sort: 3
 ---
 # Issue a Thread Block
-When a thread block is issued, all its traces are loaded into the hardware warps of the target SM core. Issuing a thread block takes a hierarchical call as follows:
+When a thread block is issued, all its traces are loaded into the hardware warps of the target SM core. 
+
+## Hardware Warp
+
+Each SM core has a set of hardware warps modeled by class `trace_shd_warp_t`. The number of hardware warps equals to the maximum number of thread supported by the SM divided by the warp size. For instance, the V100 GPU supports 2048 threads per SM core, and the warp size is 32. So the total number of hardware warps equal to 64.
+
+### Definition
+The `trace_shd_warp_t` is defined as follows
+```c++
+class trace_shd_warp_t : public shd_warp_t {
+public:
+  trace_shd_warp_t(class shader_core_ctx *shader, unsigned warp_size)
+      : shd_warp_t(shader, warp_size) {
+    trace_pc = 0;
+    m_kernel_info = NULL;
+  }
+  // container of the traces of the warp
+  std::vector<inst_trace_t> warp_traces;
+  const trace_warp_inst_t *get_next_trace_inst();
+  void clear();
+  bool trace_done();
+  address_type get_start_trace_pc();
+  virtual address_type get_pc();
+  trace_warp_inst_t *set_kernel(trace_kernel_info_t *kernel_info) {
+    m_kernel_info = kernel_info;
+  }
+
+private:
+  unsigned trace_pc;
+  // 
+  trace_kernel_info_t *m_kernel_info;
+};
+```
+The hardware warp contains a member `std::vector<inst_trace_t> warp_traces;`. It is the container of the traces of the warp.
+
+***
+
+## Issue a Thread Block
+
+Issuing a thread block takes a hierarchical call as follows:
 
 *  `gpgpu_sim::cycle()`
     * `gpgpu_sim::issue_block2core()`
@@ -12,7 +51,7 @@ When a thread block is issued, all its traces are loaded into the hardware warps
                     * `trace_shader_core_ctx::init_traces()`
                         * `trace_kernel_info_t::get_next_threadblock_traces()`
 
-## gpgpu_sim::cycle()
+### gpgpu_sim::cycle()
 In each simulation cycle, the `gpgpu_sim::cycle()` is called. This function takes no arguments.
 ```c++
 // main()
@@ -23,7 +62,7 @@ if (m_gpgpu_sim->active()) {
 } 
 ```
 
-## gpgpu_sim::issue_block2core()
+### gpgpu_sim::issue_block2core()
 In the `gpgpu_sim::cycle()`, besides calling `cycle()` function of other units like the cores, it also call the function `gpgpu_sim::issue_block2core()`, which also takes no argument.
 ```c++
 // gpgpu_sim::cycle()
@@ -49,7 +88,7 @@ void gpgpu_sim::issue_block2core() {
 ```
 Basically, all the SM clusters are traversed. The traversal starts from the last issued cluster. For each cluster, `issue_block2core` is called, which returns the number of blocks issued by this cluster. This is incremented to the member `gpgpu_sim::m_total_cta_launched`.
 
-## simt_core_cluster::issue_block2core()
+### simt_core_cluster::issue_block2core()
 
 In `simt_core_cluster::issue_block2core()`, we have
 ```c++
@@ -89,7 +128,7 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
 ```
 This is quite simple. As the config knows the resources (reg, shared memory) occupied by the kernel, it can compute the maximum number of CTAs supported by each SM. So simply check whether the number of active CTAs is smaller than the upper bound.
 
-## shader_core_ctx::issue_block2core()
+### shader_core_ctx::issue_block2core()
 
 In `shader_core_ctx::issue_block2core()`, we only want to issue 1 CTA if it is possible. We have
 ```c++
@@ -140,7 +179,7 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 ```
 It first computes start and end threads occupied by the CTA. Then it calls the `trace_shader_core_ctx::init_warps`
 
-## trace_shader_core_ctx::init_warps()
+### trace_shader_core_ctx::init_warps()
 
 In `trace_shader_core_ctx::init_warps`, we have
 ```c++
@@ -159,9 +198,9 @@ void trace_shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
   init_traces(start_warp, end_warp, kernel);
 }
 ```
-It compute the start warp and end hardware warp of the CTA, and call the `trace_shader_core_ctx::init_traces()`
+It compute the start hardware warp and end hardware warp of the CTA, and call the `trace_shader_core_ctx::init_traces()`
 
-## trace_shader_core_ctx::init_traces()
+### trace_shader_core_ctx::init_traces()
 ```c++
 void trace_shader_core_ctx::init_traces(unsigned start_warp, unsigned end_warp,
                                         kernel_info_t &kernel) {
@@ -188,92 +227,4 @@ void trace_shader_core_ctx::init_traces(unsigned start_warp, unsigned end_warp,
   // Something else
 }
 ```
-The `trace_shd_warp_t`s are the hardware warps. They have a vector `trace_shd_warp_t::warp_trace`  to store the traces of the warp.
-## get_next_threadblock_traces()
-```c++
-bool trace_kernel_info_t::get_next_threadblock_traces(
-   std::vector<std::vector<inst_trace_t> *> threadblock_traces) {
-  
-  // threadblock_traces is a vector of vector of inst_trace_t
-  // the vector of vector is reset to empty containers
-  for (unsigned i = 0; i < threadblock_traces.size(); ++i) {
-    threadblock_traces[i]->clear();
-  }
-	
-  // The parser is called to get the next_threadblock_trace
-  bool success = m_parser->get_next_threadblock_traces(
-      threadblock_traces, m_kernel_trace_info->trace_verion);
-
-  return success;
-} 
-
-bool trace_parser::get_next_threadblock_traces(
-    std::vector<std::vector<inst_trace_t> *> threadblock_traces,
-    unsigned trace_version) {
-  
-  // Simularly, the container is cleared at the begining
-  for (unsigned i = 0; i < threadblock_traces.size(); ++i) {
-    threadblock_traces[i]->clear();
-  }
-
-  unsigned block_id_x = 0, block_id_y = 0, block_id_z = 0;
-  // A flag the indicates the screening reaches a threadblock
-  bool start_of_tb_stream_found = false;
-
-  unsigned warp_id = 0;
-  unsigned insts_num = 0;
-  unsigned inst_count = 0;  // counter for the instructions.
-	
-  // Actually, the file is not closed
-  // So I guess it will continue after the loop breaks and accessed again
-  while (!ifs.eof()) {
-    std::string line;
-    std::stringstream ss;
-    std::string string1, string2;
-
-    getline(ifs, line);
-		// Skip the empty line
-    if (line.length() == 0) {
-      continue;
-    } else {
-      ss.str(line);
-      ss >> string1 >> string2;
-      if (string1 == "#BEGIN_TB") {
-        if (!start_of_tb_stream_found) {
-          start_of_tb_stream_found = true;  // the flag is set to True
-        } else
-          assert(0 &&
-                 "Parsing error: thread block start before the previous one "
-                 "finishes");
-      } else if (string1 == "#END_TB") {  // end of the thread blcok
-        assert(start_of_tb_stream_found);
-        break; // end of TB stream
-      } else if (string1 == "thread" && string2 == "block") {
-        assert(start_of_tb_stream_found);
-        sscanf(line.c_str(), "thread block = %d,%d,%d", &block_id_x,
-               &block_id_y, &block_id_z);  // Set the threadblock id
-        std::cout << line << std::endl;
-      } else if (string1 == "warp") {
-        // the start of new warp stream
-        assert(start_of_tb_stream_found);
-        sscanf(line.c_str(), "warp = %d", &warp_id);  // Get warp id
-      } else if (string1 == "insts") {
-        assert(start_of_tb_stream_found);
-        sscanf(line.c_str(), "insts = %d", &insts_num);  // Get the number of warps
-        threadblock_traces[warp_id]->resize(
-            insts_num); // allocate all the space at once
-        inst_count = 0;
-      } else {
-        // vector::at: returns a reference to the element at position n in the vector
-        assert(start_of_tb_stream_found);
-        threadblock_traces[warp_id]
-            ->at(inst_count)
-            .parse_from_string(line, trace_version);
-        inst_count++;
-      }
-    }
-  }
-
-  return true;
-}
-```
+The `trace_shd_warp_t`s are the hardware warps. They have a vector `trace_shd_warp_t::warp_trace`  to store the traces of the warp. The `warp_trace` of the hardware warps assigned to the thread block are collected into a vector, which is the input of the `trace_kernel_info_t`. At last, the `trace_kernel_info_t::get_next_threadblock_trace()` is involked to fill the container. 
