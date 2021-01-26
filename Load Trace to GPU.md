@@ -94,20 +94,45 @@ for command in commandlist{
     }
 }    
 ```
+In the first step, a tracer is created. The tracer gets a list of commands from the `kernelslist.g` file. For each command in the command list, if it is launching a kernel, an object of `trace_kernel_info_t` will be created. It will be used as the interface between the trace file and the performance model.
 
 ## Class: trace_kernel_info
 
-The `(trace_)kernel_info` is an important interface between the trace files and the performance simulator. In particular, it provides a function that load the trace of a thread block into a vector of vector of `inst_trace_t`:
+The `(trace_)kernel_info` is an important interface between the trace files and the performance simulator. In particular, it provides a function that load the trace of a thread block into a vector of vector of `inst_trace_t`.
+
+### Definition 
+
+The class is defined as follows
 ```c++
 class trace_kernel_info_t : public kernel_info_t {
 public:
+  trace_kernel_info_t(dim3 gridDim, dim3 blockDim,
+                      trace_function_info *m_function_info,
+                      trace_parser *parser, class trace_config *config,
+                      kernel_trace_t *kernel_trace_info);
+
   bool get_next_threadblock_traces(
       std::vector<std::vector<inst_trace_t> *> threadblock_traces);
+
 private:
-  // Some other functions and basic-information members
+  trace_config *m_tconfig;
+  const std::unordered_map<std::string, OpcodeChar> *OpcodeMap;
+  trace_parser *m_parser;
+  kernel_trace_t *m_kernel_trace_info;
+
+  friend class trace_shd_warp_t;
 };
 ```
-Most of the members in this class are just providing some functionality and basic informations of a kernel. The most important function is `get_next_threadblock_traces`. It takes a vector of vector as input
+Most of the members in this class are just providing some functionality and basic informations of a kernel. The most important function is `get_next_threadblock_traces`. 
+
+
+
+
+***
+
+
+
+It takes a vector of vector as input
 ```c++
 // Input: vector of vector of inst_trace_t
 std::vector<std::vector<inst_trace_t> *> threadblock_traces;
