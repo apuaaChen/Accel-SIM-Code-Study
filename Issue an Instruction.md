@@ -406,6 +406,7 @@ In a nutshell, the scheduler finds a hardware warp with a valid ibuffer slot and
 
 <details><summary>SRC CODE</summary>
 
+Source Code:
 ```c++
 // scheduler_unit
 std::vector<shd_warp_t *> *m_warp;
