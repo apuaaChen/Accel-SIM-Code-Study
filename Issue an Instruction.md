@@ -3,6 +3,12 @@ sort: 6
 ---
 # Issue an Instruction
 ![Image](./figures/Issue.PNG)
+This corresponds to the `issue()` function in the SM core's pipeline.
+```c++
+// shader_core_ctx::cycle()
+issue();
+```
+Basically, each scheduler unit in the SM core finds the hardware warp with a valid I-Buffer and highest priority. The priority of hardware warps are determined by which type of scheduler is used. To issue the instruction, the instruction must pass several checks including the barrier and the scoreboard. The issued instruction will be put into the slot in the ID_OC pipeline register set indexed by the scheduler id.
 
 ## Barriers
 CUDA supports different kinds of barriers like `membar` in PTX and other warp-wide or block-wide sync barriers. They are modeled by `shd_warp_t::set_membar()` and `shd_warp_t::clear_membar()`, or the `barrier_ste_t m_barriers` in the `shader_core_ctx`.
@@ -17,6 +23,8 @@ An instruction cannot be issued if its source registers or destination registers
 > In the SASS code, there are 6 barriers can be assigned to avoid data hazard. For instance, if a preceding instruction is marked with barrier 1, and a following instruction is maked with wait barrier 0x000010b, then the next instruction cannot be issued before the previous one is finished. However, this kind of barrier is not modeled in the Accel-SIM. 
 
 > We guess that as each warp is allowed to access a large volumn of registers, it is too costly to track all the conflicts in the hardware. Therefore, the compiler resolves the data dependency between instructions, and mark the unavoidable hazards with one of the 6 barriers. The hardware only has to check the 6 barriers, which could be much simpler.
+
+### Definition
 
 The class `Scoreboard` is defined in `scoreboard.h` as follows
 ```c++
@@ -48,9 +56,13 @@ class Scoreboard {
   class gpgpu_t *m_gpu;
 };
 ```
+The member `m_sid` indicates the SM core id. The `reg_table` reserves all the destination registers in the issued instructions that are not written back. The `longopregs` reserves all the destination registers in the issued memory access instructions that are not written back. It also provides functions like reserving or releasing registers from scoreboard and checking Collisions.
+
+### Init()
 The Scoreboard is initialized as follows
 ```c++
 // shader_core_ctx::create_schedulers()
+// m_sid: the SM core ID
 m_scoreboard = new Scoreboard(m_sid, m_config->max_warps_per_shader, m_gpu);
 
 // sid: SM id
@@ -65,7 +77,10 @@ Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
   m_gpu = gpu;
 }
 ```
-So each warp has a vector of  `std::set<unsigned>` for `reg_table` and  a vector of  `std::set<unsigned>` for `longopregs`. The length of the vector equals to the number of hardware warps.
+So each warp has a vector of  `std::set<unsigned>` for `reg_table` and  a vector of  `std::set<unsigned>` for `longopregs`. The length of the vector equals to the number of hardware warps. In another word, each hardware warp has its scoreboard.
+
+### Reserve and Release Register
+When an instruction is issued, its destination registers will be reserved in the scoreboard of teh corresponding hardware warp. When the instruction passes writeback, its destination registers are released.
 ```c++
 // wid: hw warp id
 // regnum: the register to reserve
@@ -92,7 +107,8 @@ void Scoreboard::releaseRegister(unsigned wid, unsigned regnum) {
   reg_table[wid].erase(regnum);
 }
 ```
-At last, the `checkCollision`
+### checkCollision()
+In the `checkCollision`, all the source and destination registers are compared with those reserved in the scoreboard. As long as there is a collision, the function returns true. The scoreboard is under state `pendingWrites` if its `reg_table` is not empty.
 ```c++
 bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
   // Get list of all input and output registers
@@ -126,7 +142,8 @@ bool Scoreboard::pendingWrites(unsigned wid) const {
   return !reg_table[wid].empty();
 }
 ```
-Let's check the longop.
+### longop
+If the instruction is load from global/local/shared memory access, its destination register is also reserved in the `longopregs`.
 ```c++
 // if the regnum is in the longopregs, it is longopreg
 const bool Scoreboard::islongop(unsigned warp_id, unsigned regnum) {
@@ -178,7 +195,7 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
   }
 }
 ```
-A brief summary of scoreboard
+### Summary
 
 * Each hardware warp has two `std::set`: `reg_table[warp_id]` and `longopregs[warp_id]`, one tracks the output registers, the other tracks the longops like memory access
 * `void reserveRegisters(const warp_inst_t *inst)`: reserve all the output registers in the scoreboard `reg_table`. If the instruction is memory read (load), the output registers are also reserved in the `longopregs`
@@ -186,6 +203,160 @@ A brief summary of scoreboard
 * `bool checkCollision(unsigned wid, const inst_t *inst) const`: as long as one of the input/output registers in the instruction is in the `reg_table`, it returns true.
 * `bool pendingWrites(unsigned wid) const`: the warp is pendingWrite as long as its score board is not empty.
 * `const bool islongop(unsigned warp_id, unsigned regnum)`: if the `regnum` is in the `longopregs`, it is longop.
+
+
+## ID_OC Pipeline Register Set
+
+In general, the SM core's pipeline is composed of the following pipeline stages
+* ID: instruction decode:
+* OC: Operand Collector
+* EX: execution
+* WB: write back
+
+The ID_OC Pipeline Register Set is used to hold the issued instructions and waits them to be used by the operand collectors (OC). 
+
+The pipeline registers are declared as a vector of `register_set`. They are created with function `shader_core_ctx::create_front_pipeline()`. The pipeline width is defined in the `gpgpusim.config`
+```c++
+# Pipeline widths and number of FUs
+# ID_OC_SP, ID_OC_DP, ID_OC_INT, ID_OC_SFU, ID_OC_MEM, OC_EX_SP, OC_EX_DP, OC_EX_INT, OC_EX_SFU, OC_EX_MEM, EX_WB, ID_OC_TENSOR_CORE, OC_EX_TENSOR_CORE
+## Volta GV100 has 4 SP SIMD units, 4 SFU units, 4 DP units per core, 4 Tensor core units
+## we need to scale the number of pipeline registers to be equal to the number of SP units
+-gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
+-gpgpu_num_sp_units 4
+-gpgpu_num_sfu_units 4
+-gpgpu_num_dp_units 4
+-gpgpu_num_int_units 4
+-gpgpu_tensor_core_avail 1
+-gpgpu_num_tensor_core_units 4
+  
+  
+const char *const pipeline_stage_name_decode[] = {
+    "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
+    "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
+    "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
+    "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+```
+
+### Definition
+The `register_set` is defined as follows
+```c++
+class register_set {
+ public:
+  // Each 
+  register_set(unsigned num, const char *name) {
+    for (unsigned i = 0; i < num; i++) {
+      regs.push_back(new warp_inst_t());
+    }
+    m_name = name;
+  }
+  
+  warp_inst_t **get_free(bool sub_core_model, unsigned reg_id) {
+    // in subcore model, each sched has a one specific reg to use (based on sched id)
+
+    assert(reg_id < regs.size());
+    if (regs[reg_id]->empty()) {
+      return &regs[reg_id];
+    }
+    assert(0 && "No free register found");
+    return NULL;
+  }
+ private:
+  std::vector<warp_inst_t *> regs;
+  const char *m_name;
+}
+```
+Each register set contains a vector of `warp_inst_t` in the member `regs`. It can also locate an empty pipeline register within it and returns a pointer to that slot. If the `sub_core_model` is set, scheduler unit `i` can only access the `i`th slot of the register set.
+
+### Init()
+
+The SM core has an vector of `register_set` called `m_pipeline_reg`. Each scheduler unit has a set of pointers point to the register sets, these pointers are linked to the objects in the SM core during initialization.
+
+```c++
+// in shader_core_ctx
+std::vector<register_set> m_pipeline_reg;
+
+// in scheduler_unit
+register_set *m_sp_out;
+register_set *m_dp_out;
+register_set *m_sfu_out;
+register_set *m_int_out;
+register_set *m_tensor_core_out;
+register_set *m_mem_out;
+std::vector<register_set *> &m_spec_cores_out;
+
+// create scheduler
+schedulers.push_back(new gto_scheduler(
+            m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
+            &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
+            &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
+            &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
+            &m_pipeline_reg[ID_OC_MEM], i));
+
+// Scheduler_unit::cycle()
+m_shader->issue_warp(*m_mem_out, pI, active_mask, warp_id, m_id);
+m_shader->issue_warp(*m_sp_out, pI, active_mask, warp_id, m_id);
+m_shader->issue_warp(*m_int_out, pI, active_mask, warp_id, m_id);
+m_shader->issue_warp(*m_dp_out, pI, active_mask, warp_id, m_id);
+m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id, m_id);
+m_shader->issue_warp(*m_tensor_core_out, pI, active_mask, warp_id, m_id);
+m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id, m_id);
+```
+The enrties in the `shader_core_ctx::m_pipeline_reg` are created in the function `shader_core_ctx::create_front_pipeline()` as follows.
+```c++
+void shader_core_ctx::create_front_pipeline() {
+  // pipeline_stages is the sum of normal pipeline stages and specialized_unit
+  // stages * 2 (for ID and EX)
+  unsigned total_pipeline_stages =
+      N_PIPELINE_STAGES + m_config->m_specialized_unit.size() * 2;
+  // Requests that the vector capacity be at least enough to contain n elements.
+  m_pipeline_reg.reserve(total_pipeline_stages);
+  // Push the normal pipeline stages
+  for (int j = 0; j < N_PIPELINE_STAGES; j++) {
+    m_pipeline_reg.push_back(
+        register_set(m_config->pipe_widths[j], pipeline_stage_name_decode[j]));
+  }
+  // Push the ID_OC stage of the specialized units
+  for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
+    m_pipeline_reg.push_back(
+        register_set(m_config->m_specialized_unit[j].id_oc_spec_reg_width,
+                     m_config->m_specialized_unit[j].name));
+    m_config->m_specialized_unit[j].ID_OC_SPEC_ID = m_pipeline_reg.size() - 1;
+    m_specilized_dispatch_reg.push_back(
+        &m_pipeline_reg[m_pipeline_reg.size() - 1]);
+  }
+  // Push the OC_EX stage of the specialized units
+  for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
+    m_pipeline_reg.push_back(
+        register_set(m_config->m_specialized_unit[j].oc_ex_spec_reg_width,
+                     m_config->m_specialized_unit[j].name));
+    m_config->m_specialized_unit[j].OC_EX_SPEC_ID = m_pipeline_reg.size() - 1;
+  }
+	
+  // If under the sub-core model
+  if (m_config->sub_core_model) {
+    // in subcore model, each scheduler should has its own issue register, so
+    // num scheduler = reg width
+    // Each scheduler corresponds to a ID_OC reg of SP, SFU, MEM, TENSOR_CORE, DP, INT
+    assert(m_config->gpgpu_num_sched_per_core ==
+           m_pipeline_reg[ID_OC_SP].get_size());
+    assert(m_config->gpgpu_num_sched_per_core ==
+           m_pipeline_reg[ID_OC_SFU].get_size());
+    assert(m_config->gpgpu_num_sched_per_core ==
+           m_pipeline_reg[ID_OC_MEM].get_size());
+    if (m_config->gpgpu_tensor_core_avail)
+      assert(m_config->gpgpu_num_sched_per_core ==
+             m_pipeline_reg[ID_OC_TENSOR_CORE].get_size());
+    if (m_config->gpgpu_num_dp_units > 0)
+      assert(m_config->gpgpu_num_sched_per_core ==
+             m_pipeline_reg[ID_OC_DP].get_size());
+    if (m_config->gpgpu_num_int_units > 0)
+      assert(m_config->gpgpu_num_sched_per_core ==
+             m_pipeline_reg[ID_OC_INT].get_size());
+  }
+	// Something else
+}
+```
+Baiscally, each function units, e.g. SP (Single Precision Unit) and DP (Double Precision Unit), have its own register set. The number of slots in the register set is defined by the pipeline width and can be configured in the configuration file. Under the `sub_core_model`, the width of the pipeline should equal to the number of schedulers in each SM core.
 
 ## Issue()
 ```c++
@@ -202,8 +373,37 @@ void shader_core_ctx::issue() {
 
 This is simple, each SM has multiple schedulers, and the schedulers are called in the roud robin way. Similarly, the `Issue_Prio` is incremented by 1 at each cycle.
 
-The `cycle()` seems to be shared across all the child classes. It is a quite complex function, so let's read it part by part.
+The `cycle()` seems to be shared across all the child classes. In summary, the scheduler's logic is as follows
 
+* For loop over the hardware warps under the order determined by the policy
+  * if warp is invalid: continue
+  * if warp's ibuffer is empty: continue
+  * if the warp is waiting for a barrier: continue
+  * Otherwise, while loop
+    * get the instruction from the warp's ibuffer
+    * if the instruction is valid
+      * [Control Hazard] if the instructions' pc != current pc, flush ibuffer
+      * else
+        * [Scoreboard check] if the registers in the instruction is not in the scoreboard
+          * [Memory] If memory access: if ID_OC available, issue & issued++, warp_inst_issued=true
+          * Else:
+            * [SP || INT] if ID_OC available, issue & issued ++, warp_inst_issued=true
+            * [DP] if ID_OC available, issue & issued ++, warp_inst_issued=true
+            * [SFU] if ID_OC available, issue & issued ++, warp_inst_issued=true
+            * [TENSOR] if ID_OC available, issue & issued ++, warp_inst_issued=true
+            * [SPEC_UNIT] if ID_OC available, issue & issued ++, warp_inst_issued=true
+        * [Scoreboard check] Else: scoreboard fails
+    * else if the slot is valid: warp divergence
+    * If (warp_inst_issued) something
+    * checked ++
+    * If checked > issued: skip this warp
+  * If issued:
+    * Update the warp order
+    * Break
+* If no valid instruction: Stall
+
+In a nutshell, the scheduler finds a hardware warp with a valid ibuffer slot and not waiting for barrier. After getting the hardware warp, get the instruction from the ibuffer and check if it is valid. For a valid instruction, if its pc doesn't match the current pc, it means that control hazard happens, and the ibuffer is flused. Then, its source and destination registers are passed to the scoreboard for collision checking. If it also passes the scoreboard, check if the ID_OC pipeline register set of the target function unit has a free slot. If it has, the instruction can be issued, and the inital for loop breaks. Otherwise, if the instruction in the current hardware warp is not issued, the next hardware warp is checked. So only one instruction is issued per scheduler unit per cycle. For more details, please check the code below.
+<code>
 ```c++
 // scheduler_unit
 std::vector<shd_warp_t *> *m_warp;
@@ -558,68 +758,21 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   return true;
 }
 ```
-In summary, the scheduler's logic is as follows
+</code>
 
-* For loop over the hardware warps under the order determined by the policy
-  * if warp is in valid: continue
-  * if warp's ibuffer is empty: continue
-  * if the warp is waiting for a barrier: continue
-  * Otherwise, while loop until (TODO: condition)
-    * get the instruction from the warp's ibuffer
-    * if the instruction is valid
-      * [Control Hazard] if the instructions' pc != current pc, flush ibuffer
-      * else
-        * [Scoreboard check] if the registers in the instruction is not in the scoreboard
-          * [Memory] If memory access: if available, issue & issued++, warp_inst_issued=true
-          * Else:
-            * [SP || INT] if available, issue & issued ++, warp_inst_issued=true
-            * [DP] if available, issue & issued ++, warp_inst_issued=true
-            * [SFU] if available, issue & issued ++, warp_inst_issued=true
-            * [TENSOR] if available, issue & issued ++, warp_inst_issued=true
-            * [SPEC_UNIT] if available, issue & issued ++, warp_inst_issued=true
-        * [Scoreboard check] Else: scoreboard fails
-    * else if the slot is valid: warp divergence
-    * If (warp_inst_issued) something
-    * checked ++
-    * If checked > issued: skip this warp
-  * If issued:
-    * Update the warp order
-    * Break
-* If no valid instruction: Stall
+
+
+
+
+
+
+*****
+
+
+
 
 Before looking at the function `shader_core_ctx::issue_warp`, let's check the pipeline registers
-```c++
-// Scheduler_unit::cycle()
-m_shader->issue_warp(*m_mem_out, pI, active_mask, warp_id, m_id);
-m_shader->issue_warp(*m_sp_out, pI, active_mask, warp_id, m_id);
-m_shader->issue_warp(*m_int_out, pI, active_mask, warp_id, m_id);
-m_shader->issue_warp(*m_dp_out, pI, active_mask, warp_id, m_id);
-m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id, m_id);
-m_shader->issue_warp(*m_tensor_core_out, pI, active_mask, warp_id, m_id);
-m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id, m_id);
 
-// in scheduler_unit
-register_set *m_sp_out;
-register_set *m_dp_out;
-register_set *m_sfu_out;
-register_set *m_int_out;
-register_set *m_tensor_core_out;
-register_set *m_mem_out;
-std::vector<register_set *> &m_spec_cores_out;
-
-// in shader_core_ctx
-std::vector<register_set> m_pipeline_reg;
-
-// create scheduler
-schedulers.push_back(new gto_scheduler(
-            m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
-            &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
-            &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
-            &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i));
-
-
-```
 The pipeline registers are declared as a vector of `register_set`. They are created with function `shader_core_ctx::create_front_pipeline()`. The pipeline width is defined in the `gpgpusim.config`
 ```c++
 # Pipeline widths and number of FUs
@@ -647,60 +800,7 @@ So we can know
 * OC: Operand Collector
 * EX: execution
 * WB: write back
-```c++
-void shader_core_ctx::create_front_pipeline() {
-  // pipeline_stages is the sum of normal pipeline stages and specialized_unit
-  // stages * 2 (for ID and EX)
-  unsigned total_pipeline_stages =
-      N_PIPELINE_STAGES + m_config->m_specialized_unit.size() * 2;
-  // Requests that the vector capacity be at least enough to contain n elements.
-  m_pipeline_reg.reserve(total_pipeline_stages);
-  // Push the normal pipeline stages
-  for (int j = 0; j < N_PIPELINE_STAGES; j++) {
-    m_pipeline_reg.push_back(
-        register_set(m_config->pipe_widths[j], pipeline_stage_name_decode[j]));
-  }
-  // Push the ID_OC stage of the specialized units
-  for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
-    m_pipeline_reg.push_back(
-        register_set(m_config->m_specialized_unit[j].id_oc_spec_reg_width,
-                     m_config->m_specialized_unit[j].name));
-    m_config->m_specialized_unit[j].ID_OC_SPEC_ID = m_pipeline_reg.size() - 1;
-    m_specilized_dispatch_reg.push_back(
-        &m_pipeline_reg[m_pipeline_reg.size() - 1]);
-  }
-  // Push the OC_EX stage of the specialized units
-  for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
-    m_pipeline_reg.push_back(
-        register_set(m_config->m_specialized_unit[j].oc_ex_spec_reg_width,
-                     m_config->m_specialized_unit[j].name));
-    m_config->m_specialized_unit[j].OC_EX_SPEC_ID = m_pipeline_reg.size() - 1;
-  }
-	
-  // If under the sub-core model
-  if (m_config->sub_core_model) {
-    // in subcore model, each scheduler should has its own issue register, so
-    // num scheduler = reg width
-    // Each scheduler corresponds to a ID_OC reg of SP, SFU, MEM, TENSOR_CORE, DP, INT
-    assert(m_config->gpgpu_num_sched_per_core ==
-           m_pipeline_reg[ID_OC_SP].get_size());
-    assert(m_config->gpgpu_num_sched_per_core ==
-           m_pipeline_reg[ID_OC_SFU].get_size());
-    assert(m_config->gpgpu_num_sched_per_core ==
-           m_pipeline_reg[ID_OC_MEM].get_size());
-    if (m_config->gpgpu_tensor_core_avail)
-      assert(m_config->gpgpu_num_sched_per_core ==
-             m_pipeline_reg[ID_OC_TENSOR_CORE].get_size());
-    if (m_config->gpgpu_num_dp_units > 0)
-      assert(m_config->gpgpu_num_sched_per_core ==
-             m_pipeline_reg[ID_OC_DP].get_size());
-    if (m_config->gpgpu_num_int_units > 0)
-      assert(m_config->gpgpu_num_sched_per_core ==
-             m_pipeline_reg[ID_OC_INT].get_size());
-  }
-	// Something else
-}
-```
+
 The `register_set` is defined as follows
 ```c++
 class register_set {
