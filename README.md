@@ -6,3 +6,4 @@ Simulatuon Cycle.md
 Instruction Decode (ID).md
 Issue an Instruction.md
 Operand Collector (OC).md
+Execute (EX).md
