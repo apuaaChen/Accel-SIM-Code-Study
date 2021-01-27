@@ -1,5 +1,5 @@
 ---
-sort: 7
+sort: 8
 ---
 # Execute
 
@@ -255,7 +255,33 @@ int start_stage = m_dispatch_reg->latency - m_dispatch_reg->initiation_interval;
 ```
 suggests that the instruction moves through the pipeline stages every cycle, but the context of dispatch unit cannot change in `initiation_interval` cycles.
 
-## 
+## Result Bus
+The SM core has a set of result buses defined as follows
+```c++
+// shader_core_ctx
+std::vector<std::bitset<MAX_ALU_LATENCY> *> m_result_bus;
+
+// shader_core_ctx::create_exec_pipeline()
+num_result_bus = m_config->pipe_widths[EX_WB];
+for (unsigned i = 0; i < num_result_bus; i++) {
+this->m_result_bus.push_back(new std::bitset<MAX_ALU_LATENCY>());
+}
+```
+Each result bus is simply a bit set. The number of result buses equal to the number of EX_WB pipeline registers.
+
+### shader_core_ctx::test_res_bus()
+This function locates a free slot in all the result buses (the slot is free if its bit is not set)
+
+```c++
+int shader_core_ctx::test_res_bus(int latency) {
+  for (unsigned i = 0; i < num_result_bus; i++) {
+    if (!m_result_bus[i]->test(latency)) {
+      return i;
+    }
+  }
+  return -1;
+}
+```
 
 ## execute()
 Then let's see the `execute()` stage of the SM core.
@@ -287,14 +313,15 @@ void shader_core_ctx::execute() {
     warp_inst_t **ready_reg = issue_inst.get_ready();
     
     /*
-    	virtual bool can_issue(const warp_inst_t &inst) const {
-    		return m_dispatch_reg->empty() && !occupied.test(inst.latency);
-    	}   
-    	// m_dispatch_reg->latency: latency of the instruction
-      virtual void issue(register_set &source_reg) {
-        source_reg.move_out_to(m_dispatch_reg);
-        occupied.set(m_dispatch_reg->latency);
-      }
+        virtual bool can_issue(const warp_inst_t &inst) const {
+            return m_dispatch_reg->empty() && !occupied.test(inst.latency);
+        }   
+
+        // m_dispatch_reg->latency: latency of the instruction
+        virtual void issue(register_set &source_reg) {
+            source_reg.move_out_to(m_dispatch_reg);
+            occupied.set(m_dispatch_reg->latency);
+        }
       
       // pipelined_simd_unit::cycle()
       occupied >>= 1;
@@ -326,3 +353,24 @@ void shader_core_ctx::execute() {
   }
 }
 ```
+
+The above code has two parts. In the first part, all the bits in the result buses are shift left, which simulates a cycle in the result bus. 
+
+In the second part, all the function units are traversed. For each function unit, its `cycle()` is called. Then, get the OC_EX port of the function unit (`issue_inst`), and get the `warp_inst_t` to be issued to the function unit from the port (`ready_reg`). 
+
+The instruction can be issued to the function unit if
+* The OC_EX port has a ready instruction
+* The function unit can issue a new instruction
+    * Its dispatch register `m_dispatch_reg` is empty, and the `inst.latency` bit of the `occupied` is not set. 
+
+If the previous two conditions are satisfied, the instruction will be issued if
+* For ldst unit: it can be issued
+* For others:
+    * The `inst.latency` bit is not set in at least one result bus.
+
+When issuing an instruction to the function unit
+* For non-ldst units:
+    * Set the `inst.latency` bit of the selected result bus
+* For all units
+    * Move the instruction from the OC_EX port to the dispatch register
+    * Set the `inst.latency` bit of the `occupied`
