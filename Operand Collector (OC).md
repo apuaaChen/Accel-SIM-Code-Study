@@ -574,17 +574,6 @@ Basically, each input port is traversed to find a ready instruction. Then, all t
 
 In this function, the arbitrator checks the request and returns a list of op_t that are in different register banks and the banks are not under state Write.
 
-Notably, the authors annoted that
-
-> a list of registers that (a) are in different register banks, (b) do not go to the same operand collector
-
-However, it seems that argument (b) is not true, unless the comment here is removed
-```c++
-if ((output < _outputs) && (_inmatch[input] == -1) &&
-          //( _outmatch[output] == -1 ) &&   //allow OC to read multiple reg
-          (_request[input][output])) {
-```
-
 ```c++
 void opndcoll_rfu_t::allocate_reads() {
   // process read requests that do not have conflicts
@@ -674,5 +663,33 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
   }
 
   return result;
+}
+```
+
+Notably, the authors annoted that
+
+> a list of registers that (a) are in different register banks, (b) do not go to the same operand collector
+
+However, it seems that argument (b) is not true, unless the comment here is removed
+```c++
+if ((output < _outputs) && (_inmatch[input] == -1) &&
+          //( _outmatch[output] == -1 ) &&   //allow OC to read multiple reg
+          (_request[input][output])) {
+```
+
+#### dispatch_ready_cu()
+
+It simply traverses all the dispatch units. Each unit finds a ready collector unit and dispatch it. 
+```c++
+void opndcoll_rfu_t::dispatch_ready_cu() {
+  // traverse all the dispatch_units
+  for (unsigned p = 0; p < m_dispatch_units.size(); ++p) {
+    dispatch_unit_t &du = m_dispatch_units[p];
+    collector_unit_t *cu = du.find_ready();
+    if (cu) {
+      // Something about stats
+      cu->dispatch();
+    }
+  }
 }
 ```
