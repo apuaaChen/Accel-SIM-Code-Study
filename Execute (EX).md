@@ -1,7 +1,7 @@
 ---
 sort: 8
 ---
-# Execute
+# Execute (EX)
 
 ![Image](./figures/execute.PNG)
 
